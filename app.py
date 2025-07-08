@@ -354,7 +354,7 @@ def submit():
         flash(f"An unexpected error occurred: {str(e)}", 'error')
         return redirect(url_for('index'))
 
-# Add all your other routes (dashboard, analytics, file management, etc.)
+# Dashboard Route
 @app.route('/dashboard')
 def dashboard():
     try:
@@ -502,8 +502,8 @@ def dashboard():
     except Exception as e:
         app.logger.error(f"Dashboard error: {str(e)}", exc_info=True)
         return render_template('error.html', message="Could not load dashboard data"), 500
-# Add this route to your Flask application (app.py)
 
+# Analytics API Route
 @app.route('/api/analytics-data')
 def analytics_data():
     """API endpoint to provide analytics data for the dashboard"""
@@ -646,7 +646,7 @@ def analytics_dashboard():
     """Route to serve the analytics dashboard"""
     return render_template('analytics.html')
 
-# Add these new routes to your existing Flask app
+# File Management Route
 @app.route('/file')
 def file_management():
     try:
@@ -769,7 +769,7 @@ def download_photo(photo_id):
         download_name=photo.filename
     )
 
-# Add template filters and context processor (keep these the same as before)
+# Add template filters and context processor
 @app.template_filter('format_file_size')
 def format_file_size(size):
     if not size or size == 0:
@@ -808,8 +808,8 @@ def utility_processor():
         }
         return icons.get(file_type.lower(), {'icon': 'fas fa-file-alt', 'color': '#667eea', 'background': '#667eea'})
     return {'get_file_icon': get_file_icon}
-# Add these routes to your existing Flask app
 
+# Assessments Routes
 @app.route('/assessments')
 def assessments_dashboard():
     """Route to serve the assessments dashboard"""
@@ -1162,12 +1162,15 @@ def export_single_assessment(assessment_id):
 @role_required('admin')
 def home():
     return render_template('home.html')
-    
 
 # Initialize database
-@app.before_first_request
-def initialize_database():
-    db.create_all()
+try:
+    with app.app_context():
+        db.create_all()
+        app.logger.info("Database tables created successfully")
+except Exception as e:
+    app.logger.error(f"Failed to initialize database: {str(e)}")
+    raise
 
 # Production configuration
 if __name__ == '__main__':
