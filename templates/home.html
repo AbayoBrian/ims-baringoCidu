@@ -257,6 +257,9 @@
                     <a class="nav-link" href="/analytics">
                         <i class="fas fa-chart-pie"></i> Advanced Analytics
                     </a>
+                    <a class="nav-link" href="/attendance">
+                        <i class="fas fa-user-check"></i> Attendance Records
+                    </a>
                     <a class="nav-link" href="/">
                         <i class="fas fa-file-alt"></i> Form Submission
                     </a>
@@ -634,6 +637,10 @@
                             window.location.href = '/analytics';
                             break;
                         case '6':
+                            e.preventDefault();
+                            window.location.href = '/attendance';
+                            break;
+                        case '7':
                             e.preventDefault();
                             window.location.href = '/';
                             break;
