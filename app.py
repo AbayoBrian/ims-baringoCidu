@@ -1,13 +1,15 @@
 import os
-from flask import Flask, render_template, request, redirect, flash, url_for, send_from_directory, jsonify, make_response
+from flask import Flask, render_template, request, redirect, flash, url_for, send_from_directory, jsonify, make_response, abort
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
-from datetime import datetime
-from sqlalchemy import func
+from datetime import datetime, date, timedelta
+from sqlalchemy import func, extract, and_, or_
 from functools import wraps 
 import re
 import io
 import csv
+import calendar
+from collections import defaultdict
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -25,6 +27,8 @@ UPLOAD_FOLDER = os.path.join(os.getcwd(), os.environ.get('UPLOAD_FOLDER', 'stati
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'gif'}
+MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB max file size
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 db = SQLAlchemy(app)
 
@@ -37,6 +41,21 @@ class User(db.Model):
     role = db.Column(db.String(20), nullable=False)
     created_at = db.Column(db.TIMESTAMP, server_default=db.func.current_timestamp())
 
+class AttendanceRecord(db.Model):
+    __tablename__ = 'attendance_record'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False)
+    filepath = db.Column(db.String(255), nullable=False)
+    venue = db.Column(db.String(100))
+    date = db.Column(db.Date)
+    event = db.Column(db.String(100))
+    upload_date = db.Column(db.DateTime, default=datetime.utcnow)
+    page_count = db.Column(db.Integer, default=0)
+
+    def __repr__(self):
+        return f'<AttendanceRecord {self.filename}>'
+
 class Subcounty(db.Model):
     __tablename__ = 'subcounties'
     subcounty_id = db.Column(db.Integer, primary_key=True)
@@ -48,19 +67,20 @@ class IrrigationScheme(db.Model):
     scheme_name = db.Column(db.String(100), nullable=False)
     subcounty_id = db.Column(db.Integer, db.ForeignKey('subcounties.subcounty_id'), nullable=False)
     scheme_type = db.Column(db.String(50))
-    registration_status = db.Column(db.String(50))
-    current_status = db.Column(db.String(50))
-    infrastructure_status = db.Column(db.String(50))
+    registration_status = db.Column(db.Enum('Self help group', 'CBO', 'Irrigation water user association'), nullable=True)
+    current_status = db.Column(db.Enum('Active', 'Dormant', 'Under Construction', 'Proposed', 'Abandoned'))
+    infrastructure_status = db.Column(db.Enum('Fully functional', 'Partially functional', 'Needs repair', 'Not functional', 'Not constructed'))
     water_source = db.Column(db.String(100))
-    water_availability = db.Column(db.String(50))
+    water_availability = db.Column(db.Enum('Adequate', 'Inadequate', 'Seasonal', 'No water'))
     intake_works_type = db.Column(db.String(100))
     conveyance_works_type = db.Column(db.String(100))
-    application_type = db.Column(db.String(50))
+    application_type = db.Column(db.Enum('Sprinkler', 'Canals', 'Basin', 'Drip', 'Furrow'))
     main_crop = db.Column(db.String(100))
     scheme_area = db.Column(db.Float)
     irrigable_area = db.Column(db.Float)
     cropped_area = db.Column(db.Float)
     implementing_agency = db.Column(db.String(100))
+    
     subcounty = db.relationship('Subcounty', backref='schemes')
 
 class GPSData(db.Model):
@@ -70,6 +90,7 @@ class GPSData(db.Model):
     latitude = db.Column(db.Numeric(9,6), nullable=False)
     longitude = db.Column(db.Numeric(9,6), nullable=False)
     recorded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
     scheme = db.relationship('IrrigationScheme', backref='gps_data')
 
 class Assessment(db.Model):
@@ -83,6 +104,7 @@ class Assessment(db.Model):
     challenges = db.Column(db.Text)
     additional_notes = db.Column(db.Text)
     created_at = db.Column(db.TIMESTAMP, nullable=False, default=datetime.utcnow)
+    
     scheme = db.relationship('IrrigationScheme', backref='assessments')
 
 class Document(db.Model):
@@ -94,6 +116,7 @@ class Document(db.Model):
     file_path = db.Column(db.String(255), nullable=False)
     file_name = db.Column(db.String(255), nullable=False)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
     scheme = db.relationship('IrrigationScheme', backref='documents')
     assessment = db.relationship('Assessment', backref='documents')
 
@@ -105,6 +128,7 @@ class Photo(db.Model):
     filename = db.Column(db.String(200), nullable=False)
     file_path = db.Column(db.String(255), nullable=False)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
     scheme = db.relationship('IrrigationScheme', backref='photos')
     assessment = db.relationship('Assessment', backref='photos')
 
@@ -112,7 +136,15 @@ class Photo(db.Model):
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def parse_date(date_str):
+    """Parse date from string in YYYY-MM-DD format"""
+    try:
+        return datetime.strptime(date_str, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return None
+
 def parse_gps_coordinates(gps_str):
+    """Parse GPS coordinates from string to decimal degrees"""
     try:
         if not gps_str:
             raise ValueError("Empty GPS coordinates")
@@ -140,6 +172,7 @@ def parse_gps_coordinates(gps_str):
         raise ValueError(f"GPS parsing error: {str(e)}")
 
 def save_uploaded_file(file, subfolder):
+    """Save uploaded file to the specified subfolder"""
     if file and file.filename:
         if not allowed_file(file.filename):
             raise ValueError(f"File type not allowed: {file.filename}")
@@ -150,6 +183,79 @@ def save_uploaded_file(file, subfolder):
         file.save(filepath)
         return filename, filepath
     return None, None
+
+def validate_file(file):
+    """Validate file before upload"""
+    if not allowed_file(file.filename):
+        return False, "Only PDF files are allowed"
+    if file.content_length > MAX_CONTENT_LENGTH:
+        return False, "File size exceeds 10MB limit"
+    return True, ""
+
+def format_date_key(d, time_period):
+    """Format date based on time period"""
+    if time_period == 'monthly':
+        return d.strftime('%b %Y')
+    elif time_period == 'weekly':
+        year, week, _ = d.isocalendar()
+        return f'W{week:02d} {year}'
+    elif time_period == 'yearly':
+        return d.strftime('%Y')
+    else:  # daily
+        return d.strftime('%Y-%m-%d')
+
+def increment_date(d, time_period):
+    """Increment date based on time period"""
+    if time_period == 'monthly':
+        # Get first day of next month
+        if d.month == 12:
+            return date(d.year + 1, 1, 1)
+        return date(d.year, d.month + 1, 1)
+    elif time_period == 'weekly':
+        return d + timedelta(days=7)
+    elif time_period == 'yearly':
+        return date(d.year + 1, 1, 1)
+    else:  # daily
+        return d + timedelta(days=1)
+
+def process_trend_data(results, time_period, start_date=None, end_date=None):
+    """Process data for trend chart"""
+    date_counts = defaultdict(int)
+    
+    for record in results:
+        date_key = format_date_key(record.date, time_period)
+        date_counts[date_key] += record.count
+    
+    # Fill in missing dates if range is provided
+    if start_date and end_date:
+        current_date = start_date
+        while current_date <= end_date:
+            date_key = format_date_key(current_date, time_period)
+            if date_key not in date_counts:
+                date_counts[date_key] = 0
+            current_date = increment_date(current_date, time_period)
+    
+    # Sort by date
+    sorted_dates = sorted(date_counts.items(), key=lambda x: x[0])
+    
+    return {
+        'labels': [x[0] for x in sorted_dates],
+        'values': [x[1] for x in sorted_dates]
+    }
+
+def process_venue_data(results):
+    """Process data for venue comparison chart"""
+    return {
+        'labels': [x[0] for x in results if x[0]],
+        'values': [x[1] for x in results if x[0]]
+    }
+
+def process_event_data(results):
+    """Process data for event distribution chart"""
+    return {
+        'labels': [x[0] if x[0] else 'No Event' for x in results],
+        'values': [x[1] for x in results]
+    }
 
 # Authentication Routes
 @app.route('/')
@@ -204,6 +310,359 @@ def role_required(required_role):
 @role_required('agent')
 def index():
     return render_template('agent.html')
+
+@app.route('/attendance')
+def attendance():
+    return render_template('attendance.html')
+
+@app.route('/api/upload', methods=['POST'])
+def upload_files():
+    if 'files' not in request.files:
+        return jsonify({'success': False, 'message': 'No files selected'}), 400
+    
+    files = request.files.getlist('files')
+    if not files or files[0].filename == '':
+        return jsonify({'success': False, 'message': 'No files selected'}), 400
+    
+    # Get metadata from form
+    venue = request.form.get('venue', '').strip()
+    date_str = request.form.get('date', '')
+    event = request.form.get('event', '').strip()
+    event_date = parse_date(date_str)
+    
+    if not venue:
+        return jsonify({'success': False, 'message': 'Venue is required'}), 400
+    
+    if not event_date:
+        return jsonify({'success': False, 'message': 'Valid date is required'}), 400
+    
+    uploaded_files = []
+    errors = []
+    
+    for file in files:
+        is_valid, validation_msg = validate_file(file)
+        if not is_valid:
+            errors.append(f"File {file.filename}: {validation_msg}")
+            continue
+            
+        try:
+            filename = secure_filename(file.filename)
+            # Add timestamp to filename to avoid collisions
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            unique_filename = f"{timestamp}_{filename}"
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            
+            # Save file
+            file.save(filepath)
+            
+            # Create database record with provided metadata
+            record = AttendanceRecord(
+                filename=filename,
+                filepath=filepath,
+                venue=venue,
+                date=event_date,
+                event=event,
+                page_count=0  # You might want to add PDF page count extraction here
+            )
+            db.session.add(record)
+            uploaded_files.append(filename)
+        except Exception as e:
+            errors.append(f"Error processing {file.filename}: {str(e)}")
+    
+    if errors and not uploaded_files:
+        return jsonify({'success': False, 'message': 'All files failed to upload', 'errors': errors}), 400
+    
+    db.session.commit()
+    
+    response = {
+        'success': True,
+        'message': f'Successfully uploaded {len(uploaded_files)} files',
+        'files': uploaded_files
+    }
+    
+    if errors:
+        response['errors'] = errors
+        response['message'] += f', with {len(errors)} errors'
+    
+    return jsonify(response)
+
+@app.route('/api/venues')
+def get_venues():
+    venues = db.session.query(AttendanceRecord.venue).distinct().filter(
+        AttendanceRecord.venue.isnot(None)
+    ).order_by(AttendanceRecord.venue).all()
+    return jsonify([v[0] for v in venues if v[0]])
+
+@app.route('/api/events')
+def get_events():
+    events = db.session.query(AttendanceRecord.event).distinct().filter(
+        AttendanceRecord.event.isnot(None)
+    ).order_by(AttendanceRecord.event).all()
+    return jsonify([e[0] for e in events if e[0]])
+
+@app.route('/api/attendance')
+def get_attendance():
+    # Pagination parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 25, type=int)
+    
+    # Filter parameters
+    date_filter = request.args.get('date')
+    venue_filter = request.args.get('venue')
+    event_filter = request.args.get('event')
+    
+    # Sorting parameters
+    sort_field = request.args.get('sort_field', 'upload_date')
+    sort_order = request.args.get('sort_order', 'desc')
+    
+    query = AttendanceRecord.query
+    
+    # Apply filters
+    if date_filter:
+        query = query.filter(AttendanceRecord.date == date_filter)
+    if venue_filter:
+        query = query.filter(AttendanceRecord.venue == venue_filter)
+    if event_filter:
+        query = query.filter(AttendanceRecord.event == event_filter)
+    
+    # Apply sorting
+    if sort_field and sort_order:
+        sort_column = getattr(AttendanceRecord, sort_field, None)
+        if sort_column is not None:
+            if sort_order == 'asc':
+                query = query.order_by(sort_column.asc())
+            else:
+                query = query.order_by(sort_column.desc())
+    
+    # Get paginated results
+    pagination = query.paginate(
+        page=page, 
+        per_page=per_page,
+        error_out=False
+    )
+    
+    records = pagination.items
+    
+    result = []
+    for record in records:
+        result.append({
+            'id': record.id,
+            'filename': record.filename,
+            'venue': record.venue,
+            'date': record.date.strftime('%Y-%m-%d') if record.date else None,
+            'event': record.event,
+            'upload_date': record.upload_date.isoformat(),
+            'page_count': record.page_count
+        })
+    
+    return jsonify({
+        'records': result,
+        'total_records': pagination.total,
+        'total_pages': pagination.pages,
+        'current_page': pagination.page
+    })
+
+@app.route('/api/attendance/stats')
+def get_attendance_stats():
+    venue_filter = request.args.get('venue')
+    event_filter = request.args.get('event')
+    time_period = request.args.get('time_period', 'monthly')
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    
+    # Parse dates if provided
+    start_date = parse_date(start_date_str) if start_date_str else None
+    end_date = parse_date(end_date_str) if end_date_str else None
+    
+    # Validate date range
+    if start_date and end_date and start_date > end_date:
+        return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+    
+    # Initialize query for trend data
+    trend_query = db.session.query(
+        AttendanceRecord.date,
+        func.count(AttendanceRecord.id).label('count')
+    )
+    
+    # Initialize query for venue data
+    venue_query = db.session.query(
+        AttendanceRecord.venue,
+        func.count(AttendanceRecord.id).label('count')
+    )
+    
+    # Initialize query for event data
+    event_query = db.session.query(
+        AttendanceRecord.event,
+        func.count(AttendanceRecord.id).label('count')
+    )
+    
+    # Apply filters to all queries
+    for query in [trend_query, venue_query, event_query]:
+        if venue_filter:
+            query = query.filter(AttendanceRecord.venue == venue_filter)
+        if event_filter:
+            query = query.filter(AttendanceRecord.event == event_filter)
+        if start_date:
+            query = query.filter(AttendanceRecord.date >= start_date)
+        if end_date:
+            query = query.filter(AttendanceRecord.date <= end_date)
+    
+    # Group trend data by time period
+    if time_period == 'monthly':
+        trend_query = trend_query.group_by(
+            extract('year', AttendanceRecord.date),
+            extract('month', AttendanceRecord.date)
+        ).order_by(
+            extract('year', AttendanceRecord.date),
+            extract('month', AttendanceRecord.date)
+        )
+    elif time_period == 'weekly':
+        trend_query = trend_query.group_by(
+            func.yearweek(AttendanceRecord.date)
+        ).order_by(
+            func.yearweek(AttendanceRecord.date)
+        )
+    elif time_period == 'yearly':
+        trend_query = trend_query.group_by(
+            extract('year', AttendanceRecord.date)
+        ).order_by(
+            extract('year', AttendanceRecord.date)
+        )
+    else:  # daily
+        trend_query = trend_query.group_by(
+            AttendanceRecord.date
+        ).order_by(
+            AttendanceRecord.date
+        )
+    
+    # Group venue data by venue
+    venue_query = venue_query.group_by(
+        AttendanceRecord.venue
+    ).order_by(
+        func.count(AttendanceRecord.id).desc()
+    )
+    
+    # Group event data by event
+    event_query = event_query.group_by(
+        AttendanceRecord.event
+    ).order_by(
+        func.count(AttendanceRecord.id).desc()
+    )
+    
+    # Execute queries
+    trend_results = trend_query.all()
+    venue_results = venue_query.all()
+    event_results = event_query.all()
+    
+    # Process results for trend chart
+    trend_data = process_trend_data(trend_results, time_period, start_date, end_date)
+    
+    # Process results for venue comparison
+    venue_data = process_venue_data(venue_results)
+    
+    # Process results for event distribution
+    event_data = process_event_data(event_results)
+    
+    return jsonify({
+        'success': True,
+        'trend': trend_data,
+        'venues': venue_data,
+        'events': event_data
+    })
+
+@app.route('/download/<int:record_id>')
+def download_file(record_id):
+    record = AttendanceRecord.query.get_or_404(record_id)
+    if not os.path.exists(record.filepath):
+        abort(404, description="File not found")
+    
+    return send_from_directory(
+        directory=os.path.dirname(record.filepath),
+        path=os.path.basename(record.filepath),
+        as_attachment=True,
+        download_name=record.filename
+    )
+
+@app.route('/preview/<int:record_id>')
+def preview_file(record_id):
+    record = AttendanceRecord.query.get_or_404(record_id)
+    if not os.path.exists(record.filepath):
+        abort(404, description="File not found")
+    
+    return send_from_directory(
+        directory=os.path.dirname(record.filepath),
+        path=os.path.basename(record.filepath)
+    )
+
+@app.route('/api/attendance/<int:record_id>', methods=['DELETE'])
+def delete_record(record_id):
+    record = AttendanceRecord.query.get_or_404(record_id)
+    
+    try:
+        # Delete file from filesystem
+        if os.path.exists(record.filepath):
+            os.remove(record.filepath)
+        
+        # Delete record from database
+        db.session.delete(record)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Record deleted successfully'
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': f'Error deleting record: {str(e)}'
+        }), 500
+
+@app.route('/api/attendance/export/csv')
+def export_csv():
+    # Get filter parameters
+    date_filter = request.args.get('date')
+    venue_filter = request.args.get('venue')
+    event_filter = request.args.get('event')
+    
+    query = AttendanceRecord.query
+    
+    # Apply filters
+    if date_filter:
+        query = query.filter(AttendanceRecord.date == date_filter)
+    if venue_filter:
+        query = query.filter(AttendanceRecord.venue == venue_filter)
+    if event_filter:
+        query = query.filter(AttendanceRecord.event == event_filter)
+    
+    records = query.order_by(AttendanceRecord.date.desc()).all()
+    
+    # Generate CSV content
+    csv_content = "ID,Filename,Venue,Date,Event,Upload Date,Page Count\n"
+    for record in records:
+        csv_content += f"{record.id},{record.filename},{record.venue or ''},"
+        csv_content += f"{record.date.strftime('%Y-%m-%d') if record.date else ''},"
+        csv_content += f"{record.event or ''},"
+        csv_content += f"{record.upload_date.isoformat() if record.upload_date else ''},"
+        csv_content += f"{record.page_count or ''}\n"
+    
+    # Create response
+    response = app.response_class(
+        response=csv_content,
+        status=200,
+        mimetype='text/csv',
+        headers={'Content-Disposition': 'attachment; filename=attendance_records.csv'}
+    )
+    
+    return response
+
+@app.route('/api/attendance/export/pdf')
+def export_pdf():
+    # This is a placeholder - in a real implementation you would generate a PDF
+    return jsonify({
+        'success': False,
+        'message': 'PDF export is not implemented yet'
+    }), 501
 
 @app.route('/submit', methods=['POST'])
 @role_required('agent')
