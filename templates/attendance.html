@@ -89,12 +89,11 @@
         .logo {
             display: flex;
             align-items: center;
-            gap: 1rem;
-            flex-wrap: wrap;
+            gap: 0.75rem;
         }
 
         .logo-img {
-            height: 50px;
+            height: 40px; /* Reduced from 50px */
             width: auto;
             max-width: 100%;
         }
@@ -105,13 +104,13 @@
         }
 
         .logo-title {
-            font-size: 1.5rem;
+            font-size: 1.25rem; /* Reduced from 1.5rem */
             font-weight: 600;
             color: var(--primary-color);
         }
 
         .logo-subtitle {
-            font-size: 0.875rem;
+            font-size: 0.75rem; /* Reduced from 0.875rem */
             color: var(--gray-dark);
         }
 
@@ -957,7 +956,7 @@
             }
             
             .logo-img {
-                width: 70px;
+                width: 60px; /* Reduced from 70px */
                 height: auto;
             }
             
@@ -1071,11 +1070,11 @@
         
         @media (max-width: 360px) {
             .logo-title {
-                font-size: 1.2rem;
+                font-size: 1.1rem; /* Reduced from 1.2rem */
             }
             
             .logo-subtitle {
-                font-size: 0.75rem;
+                font-size: 0.7rem; /* Reduced from 0.75rem */
             }
             
             .section-title {
@@ -1112,7 +1111,6 @@
 </head>
 <body>
     <header>
-    <div class="header-content">
         <div class="logo">
             <img src="/static/images/baringo-logo.png?t=123" alt="Logo" class="logo-img">
             <div class="logo-text">
@@ -1125,17 +1123,16 @@
                 <i class="fas fa-tachometer-alt"></i> Dashboard
             </a>
         </nav>
-    </div>
-    <div class="user-profile">
-        <div class="user-avatar">
-            <img src="https://ui-avatars.com/api/?name=Admin+User&background=4f46e5&color=fff" alt="User Avatar">
+        <div class="user-profile">
+            <div class="user-avatar">
+                <img src="https://ui-avatars.com/api/?name=Admin+User&background=4f46e5&color=fff" alt="User Avatar">
+            </div>
+            <div>
+                <div class="user-name">Admin User</div>
+                <div class="user-role">Administrator</div>
+            </div>
         </div>
-        <div>
-            <div class="user-name">Admin User</div>
-            <div class="user-role">Administrator</div>
-        </div>
-    </div>
-</header>
+    </header>
 
     <div class="container">
         <section class="card upload-section">
