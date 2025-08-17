@@ -19,8 +19,8 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here')
 
 # Database configuration
-app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://cidudb_user:eJ3CFdD6MWDQlYnHS1DpRrjOssDDsRLE@dpg-d2gpnojuibrs73ej96ig-a.oregon-postgres.render.com/cidudb"
-
+#app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://cidudb_user:eJ3CFdD6MWDQlYnHS1DpRrjOssDDsRLE@dpg-d2gpnojuibrs73ej96ig-a.oregon-postgres.render.com/cidudb"
+app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql+psycopg://cidudb_user:eJ3CFdD6MWDQlYnHS1DpRrjOssDDsRLE@dpg-d2gpnojuibrs73ej96ig-a.oregon-postgres.render.com/cidudb"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 # File upload configuration
