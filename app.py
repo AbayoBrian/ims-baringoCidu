@@ -11,6 +11,7 @@ import csv
 import calendar
 from collections import defaultdict
 from dotenv import load_dotenv
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 
 # Load environment variables
 load_dotenv()
@@ -19,7 +20,6 @@ app = Flask(__name__, static_folder='static', static_url_path='')
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here')
 
 # Database configuration
-#app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://cidudb_user:eJ3CFdD6MWDQlYnHS1DpRrjOssDDsRLE@dpg-d2gpnojuibrs73ej96ig-a.oregon-postgres.render.com/cidudb"
 app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql+psycopg://cidudb_user:eJ3CFdD6MWDQlYnHS1DpRrjOssDDsRLE@dpg-d2gpnojuibrs73ej96ig-a.oregon-postgres.render.com/cidudb"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
@@ -32,6 +32,32 @@ MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB max file size
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 db = SQLAlchemy(app)
+
+# Define ENUM types with names for PostgreSQL
+registration_status_enum = PG_ENUM(
+    'Self help group', 'CBO', 'Irrigation water user association',
+    name='registration_status_enum'
+)
+
+current_status_enum = PG_ENUM(
+    'Active', 'Dormant', 'Under Construction', 'Proposed', 'Abandoned',
+    name='current_status_enum'
+)
+
+infrastructure_status_enum = PG_ENUM(
+    'Fully functional', 'Partially functional', 'Needs repair', 'Not functional', 'Not constructed',
+    name='infrastructure_status_enum'
+)
+
+water_availability_enum = PG_ENUM(
+    'Adequate', 'Inadequate', 'Seasonal', 'No water',
+    name='water_availability_enum'
+)
+
+application_type_enum = PG_ENUM(
+    'Sprinkler', 'Canals', 'Basin', 'Drip', 'Furrow',
+    name='application_type_enum'
+)
 
 # Database Models
 class User(db.Model):
@@ -68,14 +94,14 @@ class IrrigationScheme(db.Model):
     scheme_name = db.Column(db.String(100), nullable=False)
     subcounty_id = db.Column(db.Integer, db.ForeignKey('subcounties.subcounty_id'), nullable=False)
     scheme_type = db.Column(db.String(50))
-    registration_status = db.Column(db.Enum('Self help group', 'CBO', 'Irrigation water user association'), nullable=True)
-    current_status = db.Column(db.Enum('Active', 'Dormant', 'Under Construction', 'Proposed', 'Abandoned'))
-    infrastructure_status = db.Column(db.Enum('Fully functional', 'Partially functional', 'Needs repair', 'Not functional', 'Not constructed'))
+    registration_status = db.Column(registration_status_enum, nullable=True)
+    current_status = db.Column(current_status_enum)
+    infrastructure_status = db.Column(infrastructure_status_enum)
     water_source = db.Column(db.String(100))
-    water_availability = db.Column(db.Enum('Adequate', 'Inadequate', 'Seasonal', 'No water'))
+    water_availability = db.Column(water_availability_enum)
     intake_works_type = db.Column(db.String(100))
     conveyance_works_type = db.Column(db.String(100))
-    application_type = db.Column(db.Enum('Sprinkler', 'Canals', 'Basin', 'Drip', 'Furrow'))
+    application_type = db.Column(application_type_enum)
     main_crop = db.Column(db.String(100))
     scheme_area = db.Column(db.Float)
     irrigable_area = db.Column(db.Float)
@@ -1626,6 +1652,14 @@ def home():
 # Initialize database
 try:
     with app.app_context():
+        # Create ENUM types first
+        registration_status_enum.create(db.engine, checkfirst=True)
+        current_status_enum.create(db.engine, checkfirst=True)
+        infrastructure_status_enum.create(db.engine, checkfirst=True)
+        water_availability_enum.create(db.engine, checkfirst=True)
+        application_type_enum.create(db.engine, checkfirst=True)
+        
+        # Then create tables
         db.create_all()
         app.logger.info("Database tables created successfully")
 except Exception as e:
